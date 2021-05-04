@@ -439,9 +439,13 @@ SEIR_ode <- function(t,y,params){
 
 ```
 
-Initialising parameters:
+Initialising parameters (since we are now considering seasonal variation we begin with the first entry in the data series):
 
 ```{r}
+I_0 <- new_york_measles$cases[1]/rho
+E_0 <- new_york_measles$cases[2]/rho
+S_0 <- N - E_0 - I_0 - R_0
+
 y_0 <- c(S_0,E_0,I_0,R_0,N) #initial conditions
 params <- c(mu,beta_0,delta_beta,phi,sigma,gamma) #parameters
 ```
@@ -502,7 +506,7 @@ Solution to SEIR equations with $\beta_0 = 8.00 \times 10^{-5}$ and $\delta \bet
 
 ```{r}
 
-beta_test(8*10^{-5},0.36,y_0,params) %>%
+beta_test(7.39*10^{-5},0.365,y_0,params) %>%
   select(time,Inf.,beta_0,delta_beta) %>%
   mutate(beta_0 = signif(beta_0,digits = 3), delta_beta = signif(delta_beta,digits = 3)) %>%
   ggplot() +
