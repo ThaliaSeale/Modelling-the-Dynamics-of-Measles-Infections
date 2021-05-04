@@ -1,0 +1,516 @@
+---
+title: "Chapter 3 Supplement"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup}
+library(tidyverse)
+library(zoo)
+library(deSolve)
+library(ggforce)
+```
+
+```{r,include=FALSE}
+# knitr::opts_chunk$set(echo = FALSE,fig.height=2.5,fig.width=7)
+
+new_york_measles <- read.csv("new_york_measlescsv.csv")
+
+new_york_population <- read.csv("population_stats_NYC.csv")
+
+# new_york_year_avg <- read.csv("new_york_year_avg.csv")
+
+new_york_measles <- new_york_measles %>%
+  filter(numdate >= 1950, numdate <=1960)
+
+new_york_population <- new_york_population %>%
+  filter(year >= 1950, year<=1960)
+```
+
+## Initial values estimation
+
+### Value of $N$:
+
+```{r}
+N <- mean(new_york_population$pop)
+N
+```
+
+### Initial value for $R$:
+
+```{r}
+R_0 <- 6/7*N
+R_0
+```
+
+### Initial value for $I$:
+
+Approximate estimate number of infections vs observed number of infections:
+
+```{r}
+10/70*N
+sum(new_york_measles$cases)
+```
+
+Reporting efficiency:
+
+```{r}
+rho <- sum(new_york_measles$cases)/(1/2*20/70*N)
+rho
+```
+Rolling average cases data frame:
+
+```{r}
+new_york_roll_avg <- new_york_measles %>%
+  mutate(cases = rollmean(cases,k=52,fill=NA,align = "left")) %>% 
+  select(numdate,cases) %>%
+  mutate(Series = "rolling_avg")
+```
+
+Initial rolling average cases, then adjusted for under-reporting: 
+
+```{r}
+new_york_roll_avg$cases[1]
+I_0 <- new_york_roll_avg$cases[1]/rho
+I_0
+```
+
+### Initial value for $E$:
+
+Second week of rolling average cases, then adjusted for under-reporting:
+
+```{r}
+new_york_roll_avg$cases[2]
+E_0 <- new_york_roll_avg$cases[2]/rho
+E_0
+```
+### Initial value for $S$:
+
+```{r}
+S_0 <- N - E_0 - I_0 - R_0
+S_0
+```
+
+### Population parameter estimation
+
+Maximum change yearly change in population size from 1950-1960:
+
+```{r}
+max(abs(new_york_population$dpop/new_york_population$pop))
+```
+
+
+Mean birth rate per capita is given by:
+
+```{r}
+mu <- mean(new_york_population$births/new_york_population$pop)
+mu
+```
+
+Mean death rate per capita is given by:
+
+```{r}
+mean(new_york_population$deaths/new_york_population$pop)
+```
+# Epidemiological Parameter estimation
+
+### Estimating $\sigma$
+
+```{r}
+sigma <- 365/8.58
+sigma
+```
+
+### Estimating $\gamma$
+
+```{r}
+12.5-8.58 + 1
+gamma <- 365/(12.5-8.58 + 1)
+gamma
+```
+
+### Calibrating $\beta$
+
+Ball-park estimate for $\beta$:
+
+```{r}
+beta <- 1e-04
+```
+
+
+Differential equations:
+
+```{r}
+SEIR_ode <- function(t,y,params){
+  S <- y[1]
+  E <- y[2]
+  I <- y[3]
+  R <- y[4]
+  N <- y[5]
+  
+  mu <- params[1]
+  beta <- params[2]
+  sigma <- params[3]
+  gamma <- params[4]
+  
+  return(list(c(mu*N - mu*S - beta*S*I, #dS/dt
+                beta*S*I - (mu + sigma)*E, #dE/dt
+                sigma*E - (mu + gamma)*I, #dI/dt
+                gamma*I - mu*R, #dR/dt
+                0))) #dN/dt
+}
+```
+
+Entering initial conditions, parameters and output times
+
+```{r}
+y_0 <- c(S_0,E_0,I_0,R_0,N) #initial conditions
+params <- c(mu,beta,sigma,gamma) #parameters
+
+times <- seq(0,10,1/52) #outputs will be produced each week for a 10 year period.
+```
+
+Solution for $\beta = 10^{-4}$:
+
+```{r}
+
+SEIR_soln <- ode(y = y_0,times = times,func = SEIR_ode,parms = params) #numerical solution of equations
+
+
+SEIR_soln_df <- as.data.frame(SEIR_soln)
+names(SEIR_soln_df) <- c("time","Sus.","Exp.","Inf.","Rem.","N")
+
+SEIR_soln_df %>%
+  pivot_longer(cols = 2:6,names_to = "Compartment",values_to = "Cases") %>%
+  mutate(Compartment = fct_relevel(Compartment,c("Sus.","Exp.","Inf.","Rem."))) %>%
+  filter(Compartment != "N") %>%
+  #mutate(Cases = rollmean(Cases,k=52,fill=NA)) %>%
+  ggplot(aes(x=time,y=Cases,group = Compartment,color=Compartment)) +
+  geom_line() +
+  facet_grid(Compartment ~.,scales="free") +
+  labs(title = "SEIR Model Solution, β = 0.0001",x = "Years",y = "Count") +
+  theme(strip.text.y = element_blank()) +
+  theme_bw()+
+  scale_color_manual(values = c("#77c298","#718dbf","#a4547d","#e84d60")) +
+  theme(legend.position = "bottom",strip.text.y = element_blank())
+```
+
+Function for finding differential equation solutions for different values of $\beta$ 
+
+```{r}
+beta_test <- function(beta,y_0,params){ #function finds SEIR solutions
+  
+  param_test <- params
+  
+  param_test[2] <- beta
+
+  times <- seq(0,10,by=1/52)
+
+  SEIR_soln <- ode(y = y_0,times = times,func = SEIR_ode,parms = param_test)
+
+  SEIR_soln_df <- as.data.frame(SEIR_soln)
+  
+  names(SEIR_soln_df) <- c("time","Sus.","Exp.","Inf.","Rem.","N")
+
+  return(SEIR_soln_df)
+}
+
+find_period <- function(beta_df){ #estimates the inter-epidemic period from solution
+  beta_diff <- diff(beta_df$Sus.) %>%
+    rollapply(2,function(x){x[1]*x[2]>0}) #numerical derivatives of the SEIR solution
+  times <- beta_df[[1]][2:(dim(beta_df)[1]-1)]
+  critical <- as.data.frame(cbind(times,beta_diff)) %>%
+    filter(beta_diff == 0) #finds critical points in solution
+  critical <- critical[1:floor(dim(critical)[1]/2)*2,]
+  return(mean(diff(critical$times)))
+  # returns mean period between maxima
+}
+```
+
+```{r,echo=FALSE}
+beta_vals <- c(0.00025,0.00026125,0.000268125,0.0002715625,0.000275,0.0003)
+est_period <- list()
+
+for(i in 1:length(beta_vals)){
+  est_period[[i]] <- find_period(beta_test(beta_vals[i],y_0,params))
+}
+
+cbind(beta_vals,est_period)
+```
+
+# Initial Comparison with original data
+
+```{r}
+cal_beta <- beta_test(0.0002715625,y_0,params) %>%
+  # mutate(cases = rollmean(Inf.,k=52,fill=NA)) %>%
+  # mutate(time = time + 1948.5)
+  mutate(cases = Inf.,time = time + 1950)
+
+# cal_beta
+
+ggplot() +
+  geom_line(data = cal_beta,aes(x=time,y=cases,color="1")) +
+  geom_line(data = new_york_measles,aes(x=numdate,y=cases/rho,color="2")) +
+  labs(title = "Comparison of SEIR Model with Sample Data",x= "Year",y="Number of Infections") +
+  scale_x_continuous(breaks = seq(1950,1960,2)) +
+  scale_y_sqrt() +
+  theme(legend.position = "bottom") +
+  scale_color_manual(values = c("#718dbf","#e84d60"),name="Legend:",labels = c("Predicted Cases","Average Weekly notifications (/ρ)")) +
+  theme_bw() +
+  theme(legend.position = "bottom")
+```
+
+```{r}
+
+cal_beta <- beta_test(0.0002715625,y_0,params) %>%
+  mutate(cases = rollmean(Inf.,k=52,fill=NA)) %>%
+  mutate(time = time + 1948)
+
+# cal_beta
+
+ggplot() +
+  geom_line(data = cal_beta,aes(x=time,y=cases,color="1")) +
+  geom_line(data = new_york_roll_avg,aes(x=numdate,y=cases/rho,color="2")) +
+  labs(title = "Comparison of SEIR Model with Sample Data",x= "Year",y="Number of Infections") +
+  scale_x_continuous(breaks = seq(1950,1960,2)) +
+  scale_y_sqrt() +
+  theme(legend.position = "bottom") +
+  scale_color_manual(values = c("#718dbf","#e84d60"),name="Legend:",labels = c("Predicted Cases","Average Weekly notifications (/ρ)")) +
+  theme_bw() +
+  theme(legend.position = "bottom")
+```
+
+## Estimating $\beta$ and $\delta \beta$
+
+Creating a data frame with values to run the algorithm:
+
+```{r}
+S_est <- new_york_measles %>%
+  #taking a rolling mean to smooth the data for ease
+  mutate(cases = rollmean(cases,k=4,fill=NA)) %>%
+  filter(!is.na(cases)) %>% #filtering out NA values
+  mutate(year = floor(numdate)) %>%
+  merge(new_york_population,by = "year") %>% #merging case data with population data
+  #converting births/deaths per year to births/deaths per week
+  mutate(births_per_week = births/52,deaths_per_week = deaths/52) 
+head(S_est)
+```
+
+Reconstructing $S$:
+
+```{r}
+S_est$S_reconstruct <- rep(S_0,dim(S_est)[1]) #creating a column for reconstructed S values, starting with S_0
+
+for(i in 1:(dim(S_est)[1]-4)){
+  S_est$S_reconstruct[i+1] <- S_est$S_reconstruct[i] + S_est$births_per_week[i] - S_est$deaths_per_week[i]/N*S_est$S_reconstruct[i]- 1/rho*S_est$cases[i+3]
+} #implementing algorithm for reconstructing S
+```
+
+Estimating $\beta_t$ from $S$ reconstruction:
+
+```{r}
+S_est$beta_est <-  rep(NA,dim(S_est)[1]) #initialising column of estimates for beta
+
+gamma <- 7/4.92 #setting gamma as a rate in weeks
+
+for(i in 4:dim(S_est)[1]){
+  S_est$beta_est[i] <- 1/S_est$S_reconstruct[i]*S_est$cases[i-1]/S_est$cases[i-3]*(gamma + S_est$deaths_per_week[i]/N)
+}
+```
+
+Graph of reconstructed values:
+
+```{r}
+S_est %>%
+  select(numdate,cases,S_reconstruct,beta_est) %>%
+  pivot_longer(cols = c("cases","S_reconstruct","beta_est")) %>%
+  mutate(name = fct_relevel(name,c("cases","S_reconstruct","beta_est"))) %>%
+  ggplot() +
+  geom_line(aes(x = numdate,y=value,color=name)) +
+  facet_grid(name ~ .,scales = "free") +
+  labs(title = "Reconstructed Values of S and corresponding estimates for β",x = "Date",y = "Value") +
+  scale_color_manual(values = c("#77c298","#718dbf","#e84d60"),labels = c("Case Notifications","Reconstructed S", "beta_t"),name = "Legend") +
+  theme_bw() +
+  scale_x_continuous(breaks = seq(1950,1960,2)) +
+  theme(legend.position = "bottom") +
+  theme(strip.text.y = element_blank())
+```
+
+Estimating $\beta_0$:
+
+Monthly median values for $\beta$
+
+```{r}
+median_beta <- S_est %>%
+  mutate(month = floor((numdate-year)*12)+1) %>% #adding a month column
+  filter(!is.na(beta_est)) %>%
+  group_by(month) %>%
+  summarise(median_beta = median(beta_est))
+
+median_beta
+```
+
+Mean of monthly median values for $\beta$
+
+```{r}
+beta_0 <- mean(median_beta$median_beta)
+
+beta_0
+```
+
+Converting this to a rate in years:
+
+```{r}
+beta_0 <- beta_0*52
+beta_0
+```
+
+Estimating $\delta \beta$:
+
+Range of values of the medians:
+
+```{r}
+range(median_beta$median_beta)
+```
+
+Estimate:
+
+```{r}
+delta_beta <- (c(-1,1)%*%range(median_beta$median_beta)/2/mean(median_beta$median_beta))[1]
+delta_beta
+```
+
+Setting the $\phi$ value:
+
+```{r}
+phi <- pi/6
+```
+
+Boxplot of reconstructed $\beta$ values for each month:
+
+```{r}
+S_est %>%
+  mutate(month = floor((numdate-year)*12)+1) %>%
+  ggplot() +
+  geom_boxplot(aes(x = month,y=beta_est,group=month)) +
+  geom_line(aes(x = month,y = beta_0/52*(1 + delta_beta*cos(2*pi*((month)/12))),color="phi = 0")) +
+  geom_line(aes(x = month,y = beta_0/52*(1 + delta_beta*cos(2*pi*((month-1)/12-1))),color="phi = pi/6")) +
+  scale_x_continuous(breaks = 1:12) +
+  theme_bw() +
+  labs(title = "Seasonal Variation of beta",y = "Estimated Value of beta",x = "Month") +
+  scale_color_manual(values = c("#718dbf","#e84d60"),name = "Approximation of beta(t)") +
+  theme(legend.position = "bottom")
+```
+
+Resetting gamma to rate per year:
+
+```{r}
+gamma <- 365/4.56
+```
+
+Adapted set of SEIR equations with seasonal effect:
+
+```{r}
+beta_t <- function(beta_0,delta_beta,phi,t){
+  return(beta_0*(1 + delta_beta*cos(2*pi*t+phi)))
+} #model for seasonal variation
+
+SEIR_ode <- function(t,y,params){
+  S <- y[1]
+  E <- y[2]
+  I <- y[3]
+  R <- y[4]
+  N <- y[5]
+  
+  mu <- params[1]
+  beta_0 <- params[2]
+  delta_beta <- params[3]
+  phi <- params[4]
+  sigma <- params[5]
+  gamma <- params[6]
+  
+  return(list(c(mu*N - mu*S - beta_t(beta_0,delta_beta,phi,t)*S*I, #dS/dt
+                beta_t(beta_0,delta_beta,phi,t)*S*I - (mu + sigma)*E, #dE/dt
+                sigma*E - (mu + gamma)*I, #dI/dt
+                gamma*I - mu*R, #dR/dt
+                0))) #dN/dt
+}
+
+```
+
+Initialising parameters:
+
+```{r}
+y_0 <- c(S_0,E_0,I_0,R_0,N) #initial conditions
+params <- c(mu,beta_0,delta_beta,phi,sigma,gamma) #parameters
+```
+
+Function finds solutions to the equations for given values of $\beta_0$ and $\delta \beta$:
+
+```{r}
+beta_test <- function(beta_0,delta_beta,y_0,params){
+  
+  params[2] <- beta_0
+  params[3] <- delta_beta
+
+  times <- seq(0,10,by=1/52)
+
+  SEIR_soln <- ode(y = y_0,times = times,func = SEIR_ode,parms = params)
+
+  SEIR_soln_df <- as.data.frame(SEIR_soln)
+  
+  names(SEIR_soln_df) <- c("time","Sus.","Exp.","Inf.","Rem.","N")
+  
+  SEIR_soln_df$beta_0 <- beta_0
+  SEIR_soln_df$delta_beta <- delta_beta
+
+  return(SEIR_soln_df)
+}
+```
+
+Comparison plots of solutions with different values of $\beta_0$ and $\delta \beta$
+
+```{r}
+
+beta_comparison_plot <- beta_test(beta_0,delta_beta,y_0,params)
+for(i in (-1):2){
+  for(j in (-2):2){
+    beta_comparison_plot <- rbind(beta_comparison_plot,
+                                  beta_test(beta_0*(1+i/5),delta_beta*(1+j/5),y_0,params))
+  }
+}
+
+plot <- beta_comparison_plot %>%
+  select(time,Inf.,beta_0,delta_beta) %>%
+  mutate(beta_0 = signif(beta_0,digits = 3), delta_beta = signif(delta_beta,digits = 3)) %>%
+  ggplot() +
+  geom_line(aes(x=time+1950,y=Inf.,color="1. SEIR Solution")) +
+  geom_line(data = new_york_measles,aes(x=numdate,y=cases/rho,color="2. Observed Cases")) +
+  labs(title = "Solutions for SEIR model with seasonal transmissibility",x = "Years",y = "Count") +
+  theme(strip.text.y = element_blank()) +
+  theme_bw() +
+  scale_color_manual(values = c("#718dbf","#e84d60"),name = "Legend") +
+  theme(legend.position = "bottom")
+
+plot + facet_grid_paginate(delta_beta ~ beta_0,ncol = 2,nrow = 5,page = 1)
+plot + facet_grid_paginate(delta_beta ~ beta_0,ncol = 2,nrow = 5,page = 2)
+
+```
+
+Solution to SEIR equations with $\beta_0 = 8.00 \times 10^{-5}$ and $\delta \beta = 0.36$:
+
+```{r}
+
+beta_test(8*10^{-5},0.36,y_0,params) %>%
+  select(time,Inf.,beta_0,delta_beta) %>%
+  mutate(beta_0 = signif(beta_0,digits = 3), delta_beta = signif(delta_beta,digits = 3)) %>%
+  ggplot() +
+  geom_line(aes(x=time+1950,y=Inf.,color="1. SEIR Solution")) +
+  geom_line(data = new_york_measles,aes(x=numdate,y=cases/rho,color="2. Observed Cases")) +
+  labs(title = "Solution for SEIR model, beta = 8.00e−05, delta_beta = 0.36",x = "Years",y = "Count") +
+  theme(strip.text.y = element_blank()) +
+  theme_bw() +
+  scale_color_manual(values = c("#718dbf","#e84d60"),name = "Legend") +
+  theme(legend.position = "bottom")
+```
