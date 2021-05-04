@@ -1,0 +1,141 @@
+---
+title: "Chapter 1 Supplement"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup}
+library(tidyverse)
+library(zoo)
+library(deSolve)
+library(ggforce)
+```
+
+# Measles Notifications in New York City, 1950-1960
+
+```{r,include=FALSE}
+# knitr::opts_chunk$set(echo = FALSE,fig.height=2.5,fig.width=7)
+
+new_york_measles <- read.csv("new_york_measlescsv.csv")
+
+new_york_population <- read.csv("population_stats_NYC.csv")
+
+# new_york_year_avg <- read.csv("new_york_year_avg.csv")
+```
+
+Filtering data to only include the range from 1950 to 1960:
+
+```{r}
+new_york_measles <- new_york_measles %>%
+  filter(numdate >= 1950, numdate <=1960)
+
+new_york_population <- new_york_population %>%
+  filter(year >= 1950, year<=1960)
+```
+
+Graphs for population data:
+
+```{r}
+new_york_population %>%
+  mutate(percent.pop.change = dpop/pop,birth.rate = births/pop,death.rate = deaths/pop) %>%
+  select(-infmort,-vaccprop,-pop,-births,-deaths) %>%
+  pivot_longer(cols = c("percent.pop.change","birth.rate","death.rate"),names_to = c("Series"),values_to = "Number") %>%
+  mutate(Series = fct_relevel(Series,c("percent.pop.change","birth.rate","death.rate"))) %>%
+  ggplot(aes(x=year,y=Number)) +
+  geom_line(aes(color = Series)) +
+  facet_grid(Series ~ .,scales = "free") +
+  labs(title = "New York Population Data 1950-1960",x="Year",y="Rate") +
+  scale_color_manual(values = c("#77c298","#718dbf","#e84d60"),labels = c("Fraction population change","Birth rate per capita","Death rate per capita")) +
+  theme_bw() +
+  theme(strip.text.y = element_blank(),legend.position = "bottom")
+```
+
+Graph for of weekly notifications:
+
+```{r}
+new_york_year_avg <- new_york_measles %>%
+  mutate(year = floor(numdate)) %>%
+  group_by(year) %>%
+  summarise(cases = mean(cases)) %>%
+  mutate(Series = "Summary")
+
+colnames(new_york_year_avg)[1] <- "Date"
+
+ny_measles_plot <- new_york_measles %>%
+  select(numdate,cases) %>%
+  mutate(Series = "Weekly Notifications")
+  
+colnames(ny_measles_plot)[1] <- "Date"
+
+ny_measles_plot <- rbind(new_york_year_avg,ny_measles_plot)
+
+ggplot() +
+  geom_line(data = new_york_measles,aes(x=numdate,y=cases,color="Weekly Notifications")) +
+  geom_step(data = new_york_year_avg,aes(x=Date,y=cases,color="Average Weekly notifications")) +
+  labs(title =" Notifications of Measles Cases in New York City, 1950-1960",x= "Year",y="Number of Notifications") +
+scale_color_manual(values = c("#718dbf","#e84d60")) +
+  theme_bw() +
+  theme(legend.position = "bottom")
+```
+
+Proportion of NYC population infected boxplot:
+
+```{r}
+ny_measles_prevalence <- new_york_measles %>%
+  mutate(year = floor(numdate))
+
+ny_measles_prevalence <- merge(ny_measles_prevalence,new_york_population,by="year")
+
+ny_measles_prevalence <- ny_measles_prevalence %>%
+  mutate(prop.infected = cases/pop,pattern = ifelse(year %% 2 == 0,"High year","Low year"))
+
+ny_measles_prevalence %>%
+  mutate(month = as.factor(floor((numdate-year)*12)+1)) %>% 
+  ggplot(aes(month,prop.infected)) +
+  geom_boxplot(aes(group = month)) +
+  labs(title="Proportion of NYC Population Infected by Month, 1950-1960",x="Month",y="Proportion of Population Infected") +
+  facet_wrap(pattern ~ .) +
+  theme_bw()
+```
+
+Average total cases in high years and low years:
+
+````{r}
+high_low <- new_york_measles %>%
+  mutate(numdate = floor(numdate)) %>%
+  group_by(numdate) %>%
+  summarise(total_cases = sum(cases)) %>%
+  mutate(high_low = ifelse(numdate %% 2 == 0,"High","Low")) %>%
+  group_by(high_low) %>%
+  summarise(total_cases = mean(total_cases))
+
+high_low
+```
+
+Ratio of total cases in high years vs low years:
+
+```{r}
+high_low$total_cases[1]/high_low$total_cases[2]
+```
+
+Size of peaks in high and low years:
+
+```{r}
+high_low2 <- new_york_measles %>%
+  mutate(numdate = floor(numdate)) %>%
+  group_by(numdate) %>%
+  summarise(max_cases = max(cases)) %>%
+  mutate(high_low = ifelse(numdate %% 2 == 0,"High","Low")) %>%
+  group_by(high_low) %>%
+  summarise(max_cases = mean(max_cases))
+
+high_low2
+```
+
+Ratio of peak cases in high years vs low years:
+
+```{r}
+high_low2$max_cases[1]/high_low2$max_cases[2]
+```
+
