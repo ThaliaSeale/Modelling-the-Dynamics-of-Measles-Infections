@@ -1,0 +1,805 @@
+---
+title: "Chapter 5 Supplement"
+output:
+  html_document:
+    df_print: paged
+---
+
+# Model exploration: comparison with compartment models and original data
+
+```{r setup}
+library(tidyverse)
+library(ggforce)
+```
+
+Loading data for trials of ABM V1:
+
+```{r}
+#Initial results
+modelV1_experiments1 <- read.csv("data/full model run.csv",skip = 25)
+#Coercion
+colnames(modelV1_experiments1)[1] <- "day"
+modelV1_experiments1$day <- 1:dim(modelV1_experiments1)[1]
+modelV1_experiments1 <- modelV1_experiments1 %>%
+  pivot_longer(2:41) %>%
+  mutate(experiment = substr(name,start =nchar(name),stop=nchar(name))) %>%
+  mutate(experiment = if_else(experiment == "s"|experiment == ".",1,as.integer(experiment)+1)) %>%
+  mutate(experiment = as.factor(experiment)) %>%
+  mutate(series = str_extract(name,"with..\\w+")) %>%
+  mutate(series = if_else(is.na(series),"notifications",substr(series,start=7,stop=nchar(series)))) %>%
+  mutate(series = factor(series,levels = c("notifications","susceptible","exposed","infectious","removed"))) %>%
+  mutate(value = value*7842545/27381)
+```
+
+Trial compartment graphs:
+
+```{r}
+modelV1_experiments1 %>%
+  filter(series != "notifications") %>%
+  ggplot() +
+  geom_line(aes(x = day,y=value,color = series)) +
+  facet_grid_paginate(series~experiment,scales = "free",ncol = 4,nrow = 4,page = 1) +
+  theme_bw() +
+  labs(title = "Compartment Counts for 8 trials of Model V1 (1)",x = "Day",y = "Counts") +
+  scale_color_manual(values = c("#77c298","#718dbf","#a4547d","#e84d60")) +
+  guides(colour = "none")
+
+modelV1_experiments1 %>%
+  filter(series != "notifications") %>%
+  ggplot() +
+  geom_line(aes(x = day,y=value,color = series)) +
+  facet_grid_paginate(series~experiment,scales = "free",ncol = 4,nrow = 4,page = 2) +
+  theme_bw() +
+  labs(title = "Compartment Counts for 8 trials of Model V1 (2)",x = "Day",y = "Counts") +
+  scale_color_manual(values = c("#77c298","#718dbf","#a4547d","#e84d60")) +
+  guides(colour = "none")
+```
+
+Loading and displaying data showing the presence of local outbreaks:
+
+```{r}
+outbreak_compartment_counts <- read.csv("data/full_model_run07042021 Compartment Counts.csv", 
+    skip = 17)
+outbreak_compartment_counts <- outbreak_compartment_counts %>%
+  select(x,y,y.1) %>%
+  transmute(day = x,exposed = y,infectious = y.1) %>%
+  pivot_longer(2:3) %>%
+  mutate(value = value*7842545/27381)
+
+outbreak_compartment_counts %>%
+  filter(day >= 500, day <= 600,name == "infectious") %>%
+  ggplot() +
+  geom_line(aes(x = day,y = value)) +
+  theme_bw() +
+  labs(title = "Numbers of infectious people, ABM V1",x = "Day",y = "Count")
+```
+
+Simulation trial with introduction algorithm disabled:
+
+```{r}
+no_reintroduction_compartment_counts <- read.csv("data/full_model_run07042021 Compartment Counts no reintroduction.csv", 
+    skip = 17)
+no_reintroduction_compartment_counts <- no_reintroduction_compartment_counts %>%
+  select(x,y,y.1) %>%
+  transmute(day = x,exposed = y,infectious = y.1) %>%
+  pivot_longer(2:3) %>%
+  mutate(value = value*7842545/27381)
+
+no_reintroduction_compartment_counts %>%
+  filter(name == "infectious") %>%
+  ggplot() +
+  geom_line(aes(x = day,y = value)) +
+  theme_bw() +
+  labs(title = "Numbers of infectious people, ABM V1, no reintroduction",y = "Count",x = "Day") +
+  xlim(c(0,750))
+```
+Comparison with New York Data:
+
+```{r}
+SEIR_soln_df <- read.csv("data/SEIR_soln.csv")
+SEIR_soln_df %>%
+  mutate(time = floor(time*365)) %>%
+  select(-X) -> SEIR_soln_df
+colnames(SEIR_soln_df) <- c("day","susceptible","exposed","infectious","removed","N")
+SEIR_soln_df %>%
+  pivot_longer(2:6) %>%
+  mutate(name = factor(name,levels = c("notifications","susceptible","exposed","infectious","removed","N"))) -> SEIR_soln_df
+
+colnames(SEIR_soln_df) <- c("day","series","value")
+SEIR_soln_df <- SEIR_soln_df %>%
+  mutate(model = "SEIR equations")
+
+new_york_measles <- read.csv("data/new_york_measlescsv.csv") %>%
+  filter(numdate >= 1950, numdate <= 1960)
+
+new_york_year_avg <- read.csv("data/new_york_year_avg.csv")
+
+modelV1_experiments1_summary <- modelV1_experiments1 %>%
+  filter(series != "notifications") %>%
+  group_by(day,series) %>%
+  summarise(value = mean(value)) %>%
+  mutate(model = "ABM")
+
+modelV1_SEIR <- rbind(modelV1_experiments1_summary,SEIR_soln_df)
+
+# modelV1_SEIR <- rbind(modelV1_experiments1_summary,modelV1_experiments3_summary,SEIR_soln_df)
+
+modelV1_SEIR %>%
+  filter(series != "N", series!= "Notifications") %>%
+  ggplot() +
+  geom_line(aes(x= day,y = value,colour = model)) +
+  facet_wrap(.~series,scales = "free") +
+  theme_bw() +
+  labs(title = "Average Compartment Counts for ABM V1 vs SEIR Equation Model",x = "Day",y = "Counts") +
+  scale_color_manual(values =c("#718dbf","#e84d60"),name = "Model") +
+  theme(legend.position = "bottom")
+```
+Estimating equilibrium point from the simulation trials:
+
+```{r}
+ABM_eqs <- modelV1_experiments1 %>%
+  filter(day >= 3*365) %>%
+  group_by(series,experiment) %>%
+  summarise(eq = mean(value))
+ABM_eq_est <- ABM_eqs %>%
+                 group_by(series) %>%
+                 summarise(mean_eq = mean(eq),var_eq = var(eq))
+
+ABM_eq_est
+```
+
+Confidence interval for equilibrium from simulation trials:
+
+```{r}
+eq_confint <- ABM_eq_est %>%
+  mutate(pm = qt(0.95,7)*sqrt(var_eq/8)) %>%
+  mutate(lower_confint = mean_eq - pm, upper_confint = mean_eq + pm) %>%
+  select(-mean_eq,-var_eq,-pm)
+
+eq_confint
+```
+
+SEIR equation equilibria:
+
+```{r}
+N <- 7842545
+mu <- 0.02096239
+sigma <- 1/(9/365)
+gamma <- 1/(5/365)
+beta <- 0.0002715625
+
+predicted_eq <- c((mu + gamma)*(mu + sigma)/(beta * sigma),
+                  mu*(N/(mu + sigma) - (mu + gamma)/(beta * sigma)),
+                  mu*((sigma*N)/((mu + gamma)*(mu + sigma))-1/beta),
+                gamma*((sigma*N)/((mu + gamma)*(mu + sigma)))-1/beta)
+
+predicted_eq
+```
+
+
+
+```{r}
+modelV1_radii <- read.csv("data/full_model_run07042021 restriction variations.csv",skip = 25)
+#Coercion
+colnames(modelV1_radii)[1] <- "day"
+modelV1_radii$day <- 1:dim(modelV1_radii)[1]
+modelV1_radii <- modelV1_radii %>%
+  pivot_longer(2:41) %>%
+  mutate(experiment = substr(name,start =nchar(name),stop=nchar(name))) %>%
+  mutate(experiment = if_else(experiment == "s"|experiment == ".",1,as.integer(experiment)+1)) %>%
+  mutate(experiment = as.factor(experiment)) %>%
+  mutate(series = str_extract(name,"with..\\w+")) %>%
+  mutate(series = if_else(is.na(series),"notifications",substr(series,start=7,stop=nchar(series)))) %>%
+  mutate(series = factor(series,levels = c("notifications","susceptible","exposed","infectious","removed")))%>%
+  mutate(value = value*7842545/27381)
+
+modelV1_radii %>%
+  filter(series != "notifications") %>%
+  ggplot() +
+  geom_line(aes(x = day,y=value,color = series)) +
+  facet_grid_paginate(series~experiment,scales = "free",ncol = 4,nrow = 4,page = 1) +
+  theme_bw() +
+  labs(title = "Compartment counts, ABM V1, varying restriction radius trials (1)",x = "Day",y = "Counts") +
+  scale_color_manual(values = c("#77c298","#718dbf","#a4547d","#e84d60")) +
+  guides(colour = "none")
+
+modelV1_radii %>%
+  filter(series != "notifications") %>%
+  ggplot() +
+  geom_line(aes(x = day,y=value,color = series)) +
+  facet_grid_paginate(series~experiment,scales = "free",ncol = 4,nrow = 4,page = 2) +
+  theme_bw() +
+  labs(title = "Compartment counts, ABM V1, varying restriction radius trials (2)",x = "Day",y = "Counts") +
+  scale_color_manual(values = c("#77c298","#718dbf","#a4547d","#e84d60")) +
+  guides(colour = "none")
+```
+
+```{r}
+modelV1_unrestricted_movement <- read.csv("data/full_model_run07042021 plots unrestricted movement.csv",skip = 25)
+#Coercion
+colnames(modelV1_unrestricted_movement)[1] <- "day"
+modelV1_unrestricted_movement$day <- 1:dim(modelV1_unrestricted_movement)[1]
+modelV1_unrestricted_movement <- modelV1_unrestricted_movement %>%
+  pivot_longer(2:41) %>%
+  mutate(experiment = substr(name,start =nchar(name),stop=nchar(name))) %>%
+  mutate(experiment = if_else(experiment == "s"|experiment == ".",1,as.integer(experiment)+1)) %>%
+  mutate(experiment = as.factor(experiment)) %>%
+  mutate(series = str_extract(name,"with..\\w+")) %>%
+  mutate(series = if_else(is.na(series),"notifications",substr(series,start=7,stop=nchar(series)))) %>%
+  mutate(series = factor(series,levels = c("notifications","susceptible","exposed","infectious","removed")))%>%
+  mutate(value = value*7842545/27381)
+
+modelV1_unrestricted_movement_summary <- modelV1_unrestricted_movement %>%
+  filter(series != "notifications") %>%
+  group_by(day,series) %>%
+  summarise(value = mean(value)) %>%
+  mutate(model = "ABM")
+
+modelV1_SEIR <- rbind(modelV1_unrestricted_movement_summary,SEIR_soln_df)
+
+# modelV1_SEIR <- rbind(modelV1_experiments1_summary,modelV1_experiments3_summary,SEIR_soln_df)
+
+modelV1_SEIR %>%
+  filter(series != "N", series!= "Notifications") %>%
+  ggplot() +
+  geom_line(aes(x= day,y = value,colour = model)) +
+  facet_wrap(.~series,scales = "free") +
+  theme_bw() +
+  labs(title = "Compartment Counts for ABM V1 (modified) vs SEIR Equation Model",x = "Day",y = "Counts") +
+  scale_color_manual(values =c("#718dbf","#e84d60"),name = "Model") +
+  theme(legend.position = "bottom") +
+  xlim(c(0,365))
+```
+
+Plot of notification weekly totals:
+
+```{r}
+modelV1_experiments1 %>%
+  filter(series == "notifications") %>%
+  mutate(week = floor(day/7)) %>%
+  group_by(experiment,week) %>%
+  summarise(weekly_notifications = sum(value)) %>%
+  ggplot() +
+  geom_line(aes(x = week,y=weekly_notifications)) +
+  facet_wrap(.~experiment,ncol = 2) +
+  theme_bw() +
+  labs(title = "Notification counts from 8 trials of ABM V1",x = "Day",y = "Notifications per Week") +
+  scale_linetype_discrete(name = "") +
+  guides(colour = "none")
+```
+Comparison of experiment 1 with original data:
+
+```{r}
+modelV1_experiments1_notifications_summary <- modelV1_experiments1 %>%
+  filter(series == "notifications") %>%
+  mutate(week = floor(day/7)) %>%
+  group_by(experiment,week) %>%
+  summarise(weekly_notifications = sum(value))
+
+modelV1_experiments1_notifications_summary %>%
+  filter(experiment == "1") %>%
+  ggplot() +
+  geom_line(aes(x = week/52+1950,y= weekly_notifications,colour = "ABM V1 Notifications")) +
+  geom_line(data = new_york_measles,aes(x = numdate,y = cases/0.167,colour = "New York Measles Notifications")) +
+  scale_color_manual(values = c("#718dbf","#e84d60"),name = "Legend") +
+  labs(title = "Weekly Notifications for Experiment 1 of ABM V1 vs SEIR Equation Model",x = "Day",y = "Notifications per Week") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+```
+
+Average weekly notifications for ABM vs observed:
+
+```{r}
+avg_weekly_notifications_ABM <- mean(filter(modelV1_experiments1_notifications_summary,week >52)$weekly_notifications)
+avg_weekly_notifications <- mean(new_york_measles$cases/0.167)
+avg_weekly_notifications_ABM
+avg_weekly_notifications
+```
+# Revising the latent and infectious period submodel
+
+Loading experiment results for ABM V2:
+
+```{r}
+modelV2_experiments1 <- read.csv("data/stochastic periods demonstration-spreadsheet.csv",skip = 27)
+#Coercion
+colnames(modelV2_experiments1)[1] <- "day"
+modelV2_experiments1$day <- 1:dim(modelV2_experiments1)[1]
+modelV2_experiments1 <- modelV2_experiments1 %>%
+  pivot_longer(2:41) %>%
+  mutate(experiment = substr(name,start =nchar(name),stop=nchar(name))) %>%
+  mutate(experiment = if_else(experiment == "s"|experiment == ".",1,as.integer(experiment)+1)) %>%
+  mutate(experiment = as.factor(experiment)) %>%
+  mutate(series = str_extract(name,"with..\\w+")) %>%
+  mutate(series = if_else(is.na(series),"notifications",substr(series,start=7,stop=nchar(series)))) %>%
+  mutate(series = factor(series,levels = c("notifications","susceptible","exposed","infectious","removed"))) %>%
+  mutate(value = value*7842545/27381)
+```
+
+Graph of experiment results for ABM V2:
+
+```{r}
+modelV2_experiments1 %>%
+  filter(series != "notifications") %>%
+  ggplot() +
+  geom_line(aes(x = day,y=value,color = series)) +
+  facet_grid_paginate(series~experiment,scales = "free",ncol = 4,nrow = 4,page = 1) +
+  theme_bw() +
+  labs(title = "Compartment Counts for 4 trials of ABM V2",x = "Day",y = "Counts") +
+  scale_color_manual(values = c("#77c298","#718dbf","#a4547d","#e84d60")) +
+  guides(colour = "none")
+
+modelV2_experiments1 %>%
+  filter(series != "notifications") %>%
+  ggplot() +
+  geom_line(aes(x = day,y=value,color = series)) +
+  facet_grid_paginate(series~experiment,scales = "free",ncol = 4,nrow = 4,page = 2) +
+  theme_bw() +
+  labs(title = "Compartment Counts for 4 trials of ABM V2",x = "Day",y = "Counts") +
+  scale_color_manual(values = c("#77c298","#718dbf","#a4547d","#e84d60")) +
+  guides(colour = "none")
+```
+
+Comparison of results of ABM V1 to ABM V2:
+
+```{r}
+modelV1_experiments1_summary <- modelV1_experiments1 %>%
+  filter(series != "notifications") %>%
+  group_by(day,series) %>%
+  summarise(value = mean(value)) %>%
+  mutate(model = "ABM V1")
+
+modelV2_experiments1_summary <- modelV2_experiments1 %>%
+  filter(series != "notifications") %>%
+  group_by(day,series) %>%
+  summarise(value = mean(value)) %>%
+  mutate(model = "ABM V2")
+
+modelV1_SEIR <- rbind(modelV1_experiments1_summary,modelV2_experiments1_summary)
+
+# modelV1_SEIR <- rbind(modelV1_experiments1_summary,modelV1_experiments3_summary,SEIR_soln_df)
+
+modelV1_SEIR %>%
+  filter(series != "N", series!= "Notifications") %>%
+  ggplot() +
+  geom_line(aes(x= day,y = value,colour = model)) +
+  facet_wrap(.~series,scales = "free") +
+  theme_bw() +
+  labs(title = "Average Compartment Counts for ABM V1 vs ABM V2",x = "Day",y = "Counts") +
+  scale_color_manual(values =c("#718dbf","#e84d60"),name = "Model") +
+  theme(legend.position = "bottom")
+```
+
+# Implementing Seasonal Variation
+
+Loading ABM V3A data:
+
+```{r}
+ABM_V3A_experiments <- read.csv("data/model08042021_seasonal_variationv3A movement submodel.csv", 
+    skip = 33)
+ABM_V3A_experiments[[1]] <- 1:dim(ABM_V3A_experiments)[1]
+colnames(ABM_V3A_experiments)[1] <- "day"
+ABM_V3A_experiments <- ABM_V3A_experiments %>%
+  pivot_longer(2:dim(ABM_V3A_experiments)[2]) %>%
+  mutate(experiment = str_extract(name,"\\d+$")) %>%
+  mutate(experiment = if_else(is.na(experiment),1,as.integer(experiment)+1)) %>%
+  mutate(series = str_extract(name,"with..\\w+")) %>%
+  mutate(series = if_else(is.na(series),"notifications",substr(series,start=7,stop=nchar(series)))) %>%
+  mutate(series = factor(series,levels = c("notifications","susceptible","exposed","infectious","removed"))) %>%
+  mutate(value = value*7842545/27382)
+
+ABM_V3A_experiments <- ABM_V3A_experiments %>%
+  filter(series != "notifications" | (series == "notifications" & day %% 7 == 1))
+```
+
+Graphs of ABM v3A compartment counts:
+
+```{r}
+ABM_V3A_experiments %>%
+  filter(series != "notifications") %>%
+  mutate(year = day/365) %>%
+  ggplot() +
+  geom_line(aes(x = year,y=value,color = series)) +
+  facet_grid_paginate(series~experiment,scales = "free",ncol = 4,nrow = 4,page = 1) +
+  theme_bw() +
+  labs(title = "Compartment Counts for 24 iterations of ABM V3A (1)",x = "Year",y = "Counts") +
+  scale_color_manual(values = c("#77c298","#718dbf","#a4547d","#e84d60")) +
+  guides(colour = "none") +
+  scale_x_continuous(breaks = 0:10*2)
+
+
+ABM_V3A_experiments %>%
+  filter(series != "notifications") %>%
+  mutate(year = day/365) %>%
+  ggplot() +
+  geom_line(aes(x = year,y=value,color = series)) +
+  facet_grid_paginate(series~experiment,scales = "free",ncol = 4,nrow = 4,page = 2) +
+  theme_bw() +
+  labs(title = "Compartment Counts for 24 iterations of ABM V3A (2)",x = "Year",y = "Counts") +
+  scale_color_manual(values = c("#77c298","#718dbf","#a4547d","#e84d60")) +
+  guides(colour = "none") +
+  scale_x_continuous(breaks = 0:10*2)
+
+ABM_V3A_experiments %>%
+  filter(series != "notifications") %>%
+  mutate(year = day/365) %>%
+  ggplot() +
+  geom_line(aes(x = year,y=value,color = series)) +
+  facet_grid_paginate(series~experiment,scales = "free",ncol = 4,nrow = 4,page = 3) +
+  theme_bw() +
+  labs(title = "Compartment Counts for 24 iterations of ABM V3A (3)",x = "Year",y = "Counts") +
+  scale_color_manual(values = c("#77c298","#718dbf","#a4547d","#e84d60")) +
+  guides(colour = "none") +
+  scale_x_continuous(breaks = 0:10*2)
+
+
+ABM_V3A_experiments %>%
+  filter(series != "notifications") %>%
+  mutate(year = day/365) %>%
+  ggplot() +
+  geom_line(aes(x = year,y=value,color = series)) +
+  facet_grid_paginate(series~experiment,scales = "free",ncol = 4,nrow = 4,page = 4) +
+  theme_bw() +
+  labs(title = "Compartment Counts for 24 iterations of ABM V3A (4)",x = "Year",y = "Counts") +
+  scale_color_manual(values = c("#77c298","#718dbf","#a4547d","#e84d60")) +
+  guides(colour = "none") +
+  scale_x_continuous(breaks = 0:10*2)
+
+
+ABM_V3A_experiments %>%
+  filter(series != "notifications") %>%
+  mutate(year = day/365) %>%
+  ggplot() +
+  geom_line(aes(x = year,y=value,color = series)) +
+  facet_grid_paginate(series~experiment,scales = "free",ncol = 4,nrow = 4,page = 5) +
+  theme_bw() +
+  labs(title = "Compartment Counts for 24 iterations of ABM V3A (5)",x = "Year",y = "Counts") +
+  scale_color_manual(values = c("#77c298","#718dbf","#a4547d","#e84d60")) +
+  guides(colour = "none") +
+  scale_x_continuous(breaks = 0:10*2)
+
+
+ABM_V3A_experiments %>%
+  filter(series != "notifications") %>%
+  mutate(year = day/365) %>%
+  ggplot() +
+  geom_line(aes(x = year,y=value,color = series)) +
+  facet_grid_paginate(series~experiment,scales = "free",ncol = 4,nrow = 4,page = 6) +
+  theme_bw() +
+  labs(title = "Compartment Counts for 24 iterations of ABM V3A (6)",x = "Year",y = "Counts") +
+  scale_color_manual(values = c("#77c298","#718dbf","#a4547d","#e84d60")) +
+  guides(colour = "none") +
+  scale_x_continuous(breaks = 0:10*2)
+
+```
+Graphs of ABM V3A notification results:
+
+```{r ABM V3A Notification Results}
+ABM_V3A_experiments %>%
+  filter(series == "notifications") %>%
+  mutate(year = day/365) %>%
+  ggplot() +
+  geom_line(aes(x = year,y=value,color = "ABM V3A Notifications")) +
+  geom_line(data = new_york_measles,aes(x = numdate-1940,y = cases/0.167,colour = "New York Measles Notifications")) +
+  geom_line(data = new_york_measles,aes(x = numdate-1950,y = cases/0.167,colour = "New York Measles Notifications")) +
+  facet_wrap_paginate(.~experiment,ncol = 3,nrow = 2,page = 1) +
+  theme_bw() +
+  labs(title = "Notification counts from 24 iterations of ABM V3A (1)",x = "Day",y = "Notifications per Week") +
+  scale_x_continuous(breaks = 0:10*2) +
+    scale_color_manual(values = c("black","#e84d60"),name = "Series") +
+    theme(legend.position = "bottom")
+
+ABM_V3A_experiments %>%
+  filter(series == "notifications") %>%
+  mutate(year = day/365) %>%
+  ggplot() +
+  geom_line(aes(x = year,y=value,color = "ABM V3A Notifications")) +
+  facet_wrap_paginate(.~experiment,ncol = 3,nrow = 2,page=2) +
+  geom_line(data = new_york_measles,aes(x = numdate-1940,y = cases/0.167,colour = "New York Measles Notifications")) +
+  geom_line(data = new_york_measles,aes(x = numdate-1950,y = cases/0.167,colour = "New York Measles Notifications")) +
+  theme_bw() +
+  labs(title = "Notification counts from 24 iterations of ABM V3A (2)",x = "Year",y = "Notifications per Week") +
+  scale_linetype_discrete(name = "") +
+  scale_x_continuous(breaks = 0:10*2) +
+    scale_color_manual(values = c("black","#e84d60"),name = "Series") +
+    theme(legend.position = "bottom")
+
+ABM_V3A_experiments %>%
+  filter(series == "notifications") %>%
+  mutate(year = day/365) %>%
+  ggplot() +
+  geom_line(aes(x = year,y=value,color = "ABM V3A Notifications")) +
+  geom_line(data = new_york_measles,aes(x = numdate-1940,y = cases/0.167,colour = "New York Measles Notifications")) +
+  geom_line(data = new_york_measles,aes(x = numdate-1950,y = cases/0.167,colour = "New York Measles Notifications")) +
+  facet_wrap_paginate(.~experiment,ncol = 3,nrow = 2,page = 3) +
+  theme_bw() +
+  labs(title = "Notification counts from 24 iterations of ABM V3A (3)",x = "Day",y = "Notifications per Week") +
+  scale_x_continuous(breaks = 0:10*2) +
+    scale_color_manual(values = c("black","#e84d60"),name = "Series") +
+    theme(legend.position = "bottom")
+
+ABM_V3A_experiments %>%
+  filter(series == "notifications") %>%
+  mutate(year = day/365) %>%
+  ggplot() +
+  geom_line(aes(x = year,y=value,color = "ABM V3A Notifications")) +
+  facet_wrap_paginate(.~experiment,ncol = 3,nrow = 2,page=4) +
+  geom_line(data = new_york_measles,aes(x = numdate-1940,y = cases/0.167,colour = "New York Measles Notifications")) +
+  geom_line(data = new_york_measles,aes(x = numdate-1950,y = cases/0.167,colour = "New York Measles Notifications")) +
+  theme_bw() +
+  labs(title = "Notification counts from 24 iterations of ABM V3A (4)",x = "Year",y = "Notifications per Week") +
+  scale_x_continuous(breaks = 0:10*2) +
+    scale_color_manual(values = c("black","#e84d60"),name = "Series") +
+    theme(legend.position = "bottom")
+```
+
+Max case histogram:
+
+```{r}
+max_cases_data <- new_york_measles %>%
+  mutate(year = floor(numdate)) %>%
+  group_by(year) %>%
+  summarise(max_cases = max(cases)/0.167) %>%
+  mutate(series = "New York Measles Cases 1950-1960")
+
+max_cases_simulation <- ABM_V3A_experiments %>%
+  mutate(year = floor(day/365)) %>%
+  filter(year >= 10,series == "notifications")  %>%
+  group_by(year,experiment) %>%
+  summarise(max_cases = max(value)) %>%
+  select(year,max_cases) %>%
+  mutate(series = "ABM V3A")
+
+rbind(max_cases_data,max_cases_simulation) %>%
+  ggplot(aes(x = max_cases,fill = series)) +
+  geom_histogram(binwidth = 500) +
+  labs(title = "Yearly maximum case counts, ABM V3A vs New York 1950-1960",x = "Maximum number of cases",y = "Number") +
+  scale_fill_manual(values = c("#e84d60","#77c298"),name = "Series") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+  
+```
+
+Mean observed max cases for high years and low years:
+
+```{r}
+max_cases_data %>%
+  mutate(high_low = ifelse(year %% 2 == 0,"High","Low")) %>%
+  group_by(high_low) %>%
+  summarise(mean_max_cases = mean(max_cases))
+```
+
+Histogram of total cases observed in a year:
+
+```{r}
+mean_cases_data <- new_york_measles %>%
+  mutate(year = floor(numdate)) %>%
+  group_by(year) %>%
+  summarise(total_cases = sum(cases)/0.167) %>%
+  mutate(series = "New York Measles Cases 1950-1960")
+
+mean_cases_simulation <- ABM_V3A_experiments %>%
+  mutate(year = floor(day/365)) %>%
+  filter(year >= 10,series == "notifications")  %>%
+  group_by(year,experiment) %>%
+  summarise(total_cases = sum(value)) %>%
+  select(year,total_cases) %>%
+  mutate(series = "ABM V3A")
+
+rbind(mean_cases_data,mean_cases_simulation) %>%
+  ggplot(aes(x = total_cases,fill = series)) +
+  geom_histogram(binwidth = 10000) +
+  labs(title = "Total yearly case counts, ABM V3A vs New York 1950-1960",x = "Maximum number of cases",y = "Number") +
+  scale_fill_manual(values = c("#e84d60","#77c298"),name = "Series") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+```
+Loading ABM V3B trial data:
+
+```{r}
+ABM_V3B_experiments <- read.csv("data/model08042021_seasonal_variationv3B.csv", 
+    skip = 33)
+ABM_V3B_experiments[[1]] <- 1:dim(ABM_V3B_experiments)[1]
+colnames(ABM_V3B_experiments)[1] <- "day"
+ABM_V3B_experiments <- ABM_V3B_experiments %>%
+  pivot_longer(2:dim(ABM_V3B_experiments)[2]) %>%
+  mutate(experiment = str_extract(name,"\\d+$")) %>%
+  mutate(experiment = if_else(is.na(experiment),1,as.integer(experiment)+1)) %>%
+  mutate(series = str_extract(name,"with..\\w+")) %>%
+  mutate(series = if_else(is.na(series),"notifications",substr(series,start=7,stop=nchar(series)))) %>%
+  mutate(series = factor(series,levels = c("notifications","susceptible","exposed","infectious","removed"))) %>%
+  mutate(value = value*7842545/27382)
+
+ABM_V3B_experiments <- ABM_V3B_experiments %>%
+  filter(series != "notifications" | (series == "notifications" & day %% 7 == 1))
+```
+
+Compartment count graphs for ABM V3B:
+
+```{r}
+ABM_V3B_experiments %>%
+  filter(series != "notifications") %>%
+  mutate(year = day/365) %>%
+  ggplot() +
+  geom_line(aes(x = year,y=value,color = series)) +
+  facet_grid_paginate(series~experiment,scales = "free",ncol = 4,nrow = 4,page = 1) +
+  theme_bw() +
+  labs(title = "Compartment Counts for 24 trials of ABM V3B (1)",x = "Year",y = "Counts") +
+  scale_color_manual(values = c("#77c298","#718dbf","#a4547d","#e84d60")) +
+  guides(colour = "none") +
+  scale_x_continuous(breaks = 0:10*2)
+
+
+ABM_V3B_experiments %>%
+  filter(series != "notifications") %>%
+  mutate(year = day/365) %>%
+  ggplot() +
+  geom_line(aes(x = year,y=value,color = series)) +
+  facet_grid_paginate(series~experiment,scales = "free",ncol = 4,nrow = 4,page = 2) +
+  theme_bw() +
+  labs(title = "Compartment Counts for 24 trials of ABM V3B (2)",x = "Year",y = "Counts") +
+  scale_color_manual(values = c("#77c298","#718dbf","#a4547d","#e84d60")) +
+  guides(colour = "none") +
+  scale_x_continuous(breaks = 0:10*2)
+
+ABM_V3B_experiments %>%
+  filter(series != "notifications") %>%
+  mutate(year = day/365) %>%
+  ggplot() +
+  geom_line(aes(x = year,y=value,color = series)) +
+  facet_grid_paginate(series~experiment,scales = "free",ncol = 4,nrow = 4,page = 3) +
+  theme_bw() +
+  labs(title = "Compartment Counts for 24 trials of ABM V3B (3)",x = "Year",y = "Counts") +
+  scale_color_manual(values = c("#77c298","#718dbf","#a4547d","#e84d60")) +
+  guides(colour = "none") +
+  scale_x_continuous(breaks = 0:10*2)
+
+
+ABM_V3B_experiments %>%
+  filter(series != "notifications") %>%
+  mutate(year = day/365) %>%
+  ggplot() +
+  geom_line(aes(x = year,y=value,color = series)) +
+  facet_grid_paginate(series~experiment,scales = "free",ncol = 4,nrow = 4,page = 4) +
+  theme_bw() +
+  labs(title = "Compartment Counts for 24 trials of ABM V3B (4)",x = "Year",y = "Counts") +
+  scale_color_manual(values = c("#77c298","#718dbf","#a4547d","#e84d60")) +
+  guides(colour = "none") +
+  scale_x_continuous(breaks = 0:10*2)
+
+
+ABM_V3B_experiments %>%
+  filter(series != "notifications") %>%
+  mutate(year = day/365) %>%
+  ggplot() +
+  geom_line(aes(x = year,y=value,color = series)) +
+  facet_grid_paginate(series~experiment,scales = "free",ncol = 4,nrow = 4,page = 5) +
+  theme_bw() +
+  labs(title = "Compartment Counts for 24 trials of ABM V3B (5)",x = "Year",y = "Counts") +
+  scale_color_manual(values = c("#77c298","#718dbf","#a4547d","#e84d60")) +
+  guides(colour = "none") +
+  scale_x_continuous(breaks = 0:10*2)
+
+
+ABM_V3B_experiments %>%
+  filter(series != "notifications") %>%
+  mutate(year = day/365) %>%
+  ggplot() +
+  geom_line(aes(x = year,y=value,color = series)) +
+  facet_grid_paginate(series~experiment,scales = "free",ncol = 4,nrow = 4,page = 6) +
+  theme_bw() +
+  labs(title = "Compartment Counts for 24 trials of ABM V3B (6)",x = "Year",y = "Counts") +
+  scale_color_manual(values = c("#77c298","#718dbf","#a4547d","#e84d60")) +
+  guides(colour = "none") +
+  scale_x_continuous(breaks = 0:10*2)
+```
+
+```{r}
+ABM_V3B_experiments %>%
+  filter(series == "notifications") %>%
+  mutate(year = day/365) %>%
+  ggplot() +
+  geom_line(aes(x = year,y=value,color = "ABM V3B Notifications")) +
+  geom_line(data = new_york_measles,aes(x = numdate-1940,y = cases/0.167,colour = "New York Measles Notifications")) +
+  geom_line(data = new_york_measles,aes(x = numdate-1950,y = cases/0.167,colour = "New York Measles Notifications")) +
+  facet_wrap_paginate(.~experiment,ncol = 3,nrow = 2,page = 1) +
+  theme_bw() +
+  labs(title = "Notification counts from 24 trials of ABM V3B (1)",x = "Day",y = "Notifications per Week") +
+  scale_x_continuous(breaks = 0:10*2) +
+    scale_color_manual(values = c("black","#e84d60"),name = "Series") +
+    theme(legend.position = "bottom")
+
+ABM_V3B_experiments %>%
+  filter(series == "notifications") %>%
+  mutate(year = day/365) %>%
+  ggplot() +
+  geom_line(aes(x = year,y=value,color = "ABM V3B Notifications")) +
+  facet_wrap_paginate(.~experiment,ncol = 3,nrow = 2,page=2) +
+  geom_line(data = new_york_measles,aes(x = numdate-1940,y = cases/0.167,colour = "New York Measles Notifications")) +
+  geom_line(data = new_york_measles,aes(x = numdate-1950,y = cases/0.167,colour = "New York Measles Notifications")) +
+  theme_bw() +
+  labs(title = "Notification counts from 24 trials of ABM V3B (2)",x = "Year",y = "Notifications per Week") +
+  scale_linetype_discrete(name = "") +
+  scale_x_continuous(breaks = 0:10*2) +
+    scale_color_manual(values = c("black","#e84d60"),name = "Series") +
+    theme(legend.position = "bottom")
+
+ABM_V3B_experiments %>%
+  filter(series == "notifications") %>%
+  mutate(year = day/365) %>%
+  ggplot() +
+  geom_line(aes(x = year,y=value,color = "ABM V3B Notifications")) +
+  geom_line(data = new_york_measles,aes(x = numdate-1940,y = cases/0.167,colour = "New York Measles Notifications")) +
+  geom_line(data = new_york_measles,aes(x = numdate-1950,y = cases/0.167,colour = "New York Measles Notifications")) +
+  facet_wrap_paginate(.~experiment,ncol = 3,nrow = 2,page = 3) +
+  theme_bw() +
+  labs(title = "Notification counts from 24 trials of ABM V3B (3)",x = "Day",y = "Notifications per Week") +
+  scale_x_continuous(breaks = 0:10*2) +
+    scale_color_manual(values = c("black","#e84d60"),name = "Series") +
+    theme(legend.position = "bottom")
+
+ABM_V3B_experiments %>%
+  filter(series == "notifications") %>%
+  mutate(year = day/365) %>%
+  ggplot() +
+  geom_line(aes(x = year,y=value,color = "ABM V3B Notifications")) +
+  facet_wrap_paginate(.~experiment,ncol = 3,nrow = 2,page=4) +
+  geom_line(data = new_york_measles,aes(x = numdate-1940,y = cases/0.167,colour = "New York Measles Notifications")) +
+  geom_line(data = new_york_measles,aes(x = numdate-1950,y = cases/0.167,colour = "New York Measles Notifications")) +
+  theme_bw() +
+  labs(title = "Notification counts from 24 trials of ABM V3B (4)",x = "Year",y = "Notifications per Week") +
+  scale_x_continuous(breaks = 0:10*2) +
+    scale_color_manual(values = c("black","#e84d60"),name = "Series") +
+    theme(legend.position = "bottom")
+```
+
+Histogram of max cases for ABM V3B:
+
+```{r}
+max_cases_data <- new_york_measles %>%
+  mutate(year = floor(numdate)) %>%
+  group_by(year) %>%
+  summarise(max_cases = max(cases)/0.167) %>%
+  mutate(series = "New York Measles Cases 1950-1960")
+
+max_cases_simulation <- ABM_V3B_experiments %>%
+  mutate(year = floor(day/365)) %>%
+  filter(year >= 10,series == "notifications")  %>%
+  group_by(year,experiment) %>%
+  summarise(max_cases = max(value)) %>%
+  select(year,max_cases) %>%
+  mutate(series = "ABM V3B")
+
+rbind(max_cases_data,max_cases_simulation) %>%
+  ggplot(aes(x = max_cases,fill = series)) +
+  geom_histogram(binwidth = 500) +
+  labs(title = "Total yearly case counts, ABM V3B vs New York 1950-1960",x = "Maximum number of cases",y = "Number") +
+  scale_fill_manual(values = c("#e84d60","#77c298"),name = "Series") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+```
+Histogram of total cases per year for ABM V3B:
+
+```{r}
+mean_cases_data <- new_york_measles %>%
+  mutate(year = floor(numdate)) %>%
+  group_by(year) %>%
+  summarise(total_cases = sum(cases)/0.167) %>%
+  mutate(series = "New York Measles Cases 1950-1960")
+
+mean_cases_simulation <- ABM_V3B_experiments %>%
+  mutate(year = floor(day/365)) %>%
+  filter(year >= 10,series == "notifications")  %>%
+  group_by(year,experiment) %>%
+  summarise(total_cases = sum(value)) %>%
+  select(year,total_cases) %>%
+  mutate(series = "ABM V3B")
+
+rbind(mean_cases_data,mean_cases_simulation) %>%
+  ggplot(aes(x = total_cases,fill = series)) +
+  geom_histogram(binwidth = 10000) +
+  labs(title = "Total yearly case counts, ABM V3B vs New York 1950-1960",x = "Maximum number of cases",y = "Number") +
+  scale_fill_manual(values = c("#e84d60","#77c298"),name = "Series") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+```
+
